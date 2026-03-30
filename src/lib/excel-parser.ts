@@ -28,7 +28,7 @@ function matchColumn(headers: string[], ...patterns: string[]): number {
 
 function parseStrategicSheet(sheet: XLSX.WorkSheet): ParsedCompany[] {
   const headerRow = findHeaderRow(sheet);
-  const data = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { header: 1 }) as unknown[][];
+  const data = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as unknown as unknown[][];
   if (!data || data.length <= headerRow + 1) return [];
 
   const headers = (data[headerRow] as unknown[]).map(h => String(h || '').trim());
@@ -65,7 +65,7 @@ function parseStrategicSheet(sheet: XLSX.WorkSheet): ParsedCompany[] {
 
 function parseFinancialSheet(sheet: XLSX.WorkSheet): ParsedCompany[] {
   const headerRow = findHeaderRow(sheet);
-  const data = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { header: 1 }) as unknown[][];
+  const data = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as unknown as unknown[][];
   if (!data || data.length <= headerRow + 1) return [];
 
   const headers = (data[headerRow] as unknown[]).map(h => String(h || '').trim());
