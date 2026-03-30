@@ -2,13 +2,16 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Upload, FileSpreadsheet, Bot, BarChart3, Check, Loader2 } from 'lucide-react';
+import { Upload, FileSpreadsheet, Bot, BarChart3, Check, Loader2, List } from 'lucide-react';
 import { parseExcelBuffer } from '@/lib/excel-parser';
 import { ParsedCompany } from '@/lib/types';
+
+type InputMode = 'excel' | 'text';
 
 export default function HomePage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [inputMode, setInputMode] = useState<InputMode>('text');
   const [file, setFile] = useState<File | null>(null);
   const [projectName, setProjectName] = useState('');
   const [strategic, setStrategic] = useState<ParsedCompany[]>([]);
@@ -17,6 +20,10 @@ export default function HomePage() {
   const [parsing, setParsing] = useState(false);
   const [creating, setCreating] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+
+  // Text input state
+  const [textInput, setTextInput] = useState('');
+  const [defaultType, setDefaultType] = useState<'Strategic' | 'PE'>('Strategic');
 
   const handleFile = useCallback(async (f: File) => {
     if (!f.name.endsWith('.xlsx')) {
@@ -48,6 +55,41 @@ export default function HomePage() {
     if (f) handleFile(f);
   }, [handleFile]);
 
+  const handleParseText = () => {
+    const lines = textInput
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.length > 0);
+
+    if (lines.length === 0) {
+      alert('Please enter at least one company name');
+      return;
+    }
+
+    const companies: ParsedCompany[] = lines.map(line => {
+      // Support format: "Company Name | website.com" or "Company Name, website.com" or just "Company Name"
+      const parts = line.split(/[|,\t]/).map(p => p.trim());
+      const companyName = parts[0];
+      const website = parts[1] || undefined;
+
+      return {
+        company_name: companyName,
+        buyer_type: defaultType,
+        website,
+      };
+    });
+
+    if (defaultType === 'Strategic') {
+      setStrategic(companies);
+      setFinancial([]);
+    } else {
+      setFinancial(companies);
+      setStrategic([]);
+    }
+
+    setParsed(true);
+  };
+
   const handleConfirm = async () => {
     if (!projectName.trim()) return;
     setCreating(true);
@@ -70,6 +112,15 @@ export default function HomePage() {
     }
   };
 
+  const handleReset = () => {
+    setFile(null);
+    setParsed(false);
+    setStrategic([]);
+    setFinancial([]);
+    setProjectName('');
+    setTextInput('');
+  };
+
   const total = strategic.length + financial.length;
 
   return (
@@ -84,89 +135,196 @@ export default function HomePage() {
 
       {/* Main */}
       <main className="flex-1 flex flex-col items-center justify-center px-4 py-16">
-        {/* Upload Card */}
+        {/* Input Card */}
         <div className="w-full max-w-xl bg-[#141414] border border-[#262626] rounded-xl p-8 space-y-6">
           {!parsed ? (
             <>
               <div className="text-center space-y-2">
-                <h1 className="text-2xl font-bold text-white">Upload your buyer list</h1>
+                <h1 className="text-2xl font-bold text-white">Add your buyer list</h1>
                 <p className="text-sm text-gray-400">
-                  Drop an .xlsx file with your target list. We&apos;ll find the best deal contact at each company.
+                  Paste company names directly or upload an Excel file.
                 </p>
               </div>
 
-              {/* Drop Zone */}
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                onDrop={handleDrop}
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                className={`
-                  border-2 border-dashed rounded-lg p-12 text-center cursor-pointer
-                  transition-all duration-200
-                  ${dragOver
-                    ? 'border-blue-500 bg-blue-500/10'
-                    : file
-                      ? 'border-green-500/50 bg-green-500/5'
-                      : 'border-[#333] hover:border-[#555] hover:bg-[#1a1a1a]'
-                  }
-                `}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".xlsx"
-                  className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) handleFile(f);
-                  }}
-                />
-                {parsing ? (
-                  <div className="flex flex-col items-center gap-3">
-                    <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
-                    <p className="text-sm text-gray-400">Parsing Excel file...</p>
+              {/* Mode Toggle */}
+              <div className="flex bg-[#0a0a0a] border border-[#262626] rounded-lg overflow-hidden">
+                <button
+                  onClick={() => setInputMode('text')}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+                    inputMode === 'text'
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-400 hover:text-white hover:bg-[#1a1a1a]'
+                  }`}
+                >
+                  <List className="w-4 h-4" />
+                  Paste List
+                </button>
+                <button
+                  onClick={() => setInputMode('excel')}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+                    inputMode === 'excel'
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-400 hover:text-white hover:bg-[#1a1a1a]'
+                  }`}
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  Upload Excel
+                </button>
+              </div>
+
+              {inputMode === 'text' ? (
+                <>
+                  {/* Buyer Type Selector */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-300">Buyer type</label>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setDefaultType('Strategic')}
+                        className={`flex-1 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                          defaultType === 'Strategic'
+                            ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                            : 'bg-[#0a0a0a] text-gray-400 border-[#333] hover:border-[#555]'
+                        }`}
+                      >
+                        Strategic
+                      </button>
+                      <button
+                        onClick={() => setDefaultType('PE')}
+                        className={`flex-1 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                          defaultType === 'PE'
+                            ? 'bg-purple-500/20 text-purple-400 border-purple-500/30'
+                            : 'bg-[#0a0a0a] text-gray-400 border-[#333] hover:border-[#555]'
+                        }`}
+                      >
+                        PE / Financial
+                      </button>
+                    </div>
                   </div>
-                ) : file ? (
-                  <div className="flex flex-col items-center gap-3">
-                    <Check className="w-10 h-10 text-green-500" />
-                    <p className="text-sm text-white font-medium">{file.name}</p>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center gap-3">
-                    <Upload className="w-10 h-10 text-gray-500" />
-                    <p className="text-sm text-gray-400">
-                      Drag & drop your .xlsx file here, or click to browse
+
+                  {/* Text Input */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-300">
+                      Company names <span className="text-gray-500 font-normal">(one per line)</span>
+                    </label>
+                    <textarea
+                      value={textInput}
+                      onChange={(e) => setTextInput(e.target.value)}
+                      rows={8}
+                      className="w-full px-4 py-3 bg-[#0a0a0a] border border-[#333] rounded-lg text-white text-sm
+                        placeholder:text-gray-500 focus:outline-none focus:border-blue-500 transition-colors
+                        resize-none font-mono"
+                      placeholder={`Danaher | danaher.com\nThermo Fisher | thermofisher.com\nAbbott Laboratories\nBecton Dickinson`}
+                    />
+                    <p className="text-xs text-gray-500">
+                      Optionally add website after a pipe: Company Name | website.com
                     </p>
                   </div>
-                )}
-              </div>
+
+                  {/* Project Name */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-300">Project name</label>
+                    <input
+                      type="text"
+                      value={projectName}
+                      onChange={(e) => setProjectName(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-[#0a0a0a] border border-[#333] rounded-lg text-white
+                        placeholder:text-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+                      placeholder="e.g. Project Alpha Buyers"
+                    />
+                  </div>
+
+                  {/* Start Button */}
+                  <button
+                    onClick={handleParseText}
+                    disabled={!textInput.trim() || !projectName.trim()}
+                    className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50
+                      disabled:cursor-not-allowed text-white font-semibold rounded-lg
+                      transition-colors"
+                  >
+                    Start Research
+                  </button>
+                </>
+              ) : (
+                <>
+                  {/* Drop Zone */}
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    onDrop={handleDrop}
+                    onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                    onDragLeave={() => setDragOver(false)}
+                    className={`
+                      border-2 border-dashed rounded-lg p-12 text-center cursor-pointer
+                      transition-all duration-200
+                      ${dragOver
+                        ? 'border-blue-500 bg-blue-500/10'
+                        : file
+                          ? 'border-green-500/50 bg-green-500/5'
+                          : 'border-[#333] hover:border-[#555] hover:bg-[#1a1a1a]'
+                      }
+                    `}
+                  >
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".xlsx"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) handleFile(f);
+                      }}
+                    />
+                    {parsing ? (
+                      <div className="flex flex-col items-center gap-3">
+                        <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
+                        <p className="text-sm text-gray-400">Parsing Excel file...</p>
+                      </div>
+                    ) : file ? (
+                      <div className="flex flex-col items-center gap-3">
+                        <Check className="w-10 h-10 text-green-500" />
+                        <p className="text-sm text-white font-medium">{file.name}</p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-3">
+                        <Upload className="w-10 h-10 text-gray-500" />
+                        <p className="text-sm text-gray-400">
+                          Drag & drop your .xlsx file here, or click to browse
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </>
           ) : (
             <>
               {/* Preview */}
               <div className="text-center space-y-2">
                 <Check className="w-10 h-10 text-green-500 mx-auto" />
-                <h2 className="text-xl font-bold text-white">File parsed successfully</h2>
+                <h2 className="text-xl font-bold text-white">
+                  {total} {total === 1 ? 'company' : 'companies'} ready
+                </h2>
                 <p className="text-sm text-gray-400">
-                  Found <span className="text-white font-semibold">{strategic.length}</span> strategic buyers
-                  and <span className="text-white font-semibold">{financial.length}</span> financial buyers
-                  {' '}({total} total)
+                  {strategic.length > 0 && <><span className="text-white font-semibold">{strategic.length}</span> strategic</>}
+                  {strategic.length > 0 && financial.length > 0 && ' and '}
+                  {financial.length > 0 && <><span className="text-white font-semibold">{financial.length}</span> PE/financial</>}
+                  {' '}buyers
                 </p>
               </div>
 
-              {/* Project Name */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-300">Project name</label>
-                <input
-                  type="text"
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-[#0a0a0a] border border-[#333] rounded-lg text-white
-                    placeholder:text-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
-                  placeholder="Enter project name"
-                />
-              </div>
+              {/* Project Name (if not already set from text mode) */}
+              {inputMode === 'excel' && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-300">Project name</label>
+                  <input
+                    type="text"
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-[#0a0a0a] border border-[#333] rounded-lg text-white
+                      placeholder:text-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+                    placeholder="Enter project name"
+                  />
+                </div>
+              )}
 
               {/* Confirm Button */}
               <button
@@ -182,22 +340,16 @@ export default function HomePage() {
                     Creating project...
                   </>
                 ) : (
-                  'Confirm & Upload'
+                  'Confirm & Start Research'
                 )}
               </button>
 
               {/* Reset */}
               <button
-                onClick={() => {
-                  setFile(null);
-                  setParsed(false);
-                  setStrategic([]);
-                  setFinancial([]);
-                  setProjectName('');
-                }}
+                onClick={handleReset}
                 className="w-full text-sm text-gray-500 hover:text-gray-300 transition-colors"
               >
-                Choose a different file
+                Start over
               </button>
             </>
           )}
@@ -207,9 +359,9 @@ export default function HomePage() {
         <div className="w-full max-w-4xl mt-20 grid grid-cols-1 md:grid-cols-3 gap-6">
           {[
             {
-              icon: <FileSpreadsheet className="w-8 h-8 text-blue-500" />,
-              title: 'Upload',
-              desc: 'Upload your buyer list Excel with company names and websites',
+              icon: <List className="w-8 h-8 text-blue-500" />,
+              title: 'Add Companies',
+              desc: 'Paste company names directly or upload an Excel with your buyer list',
             },
             {
               icon: <Bot className="w-8 h-8 text-blue-500" />,
