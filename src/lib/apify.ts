@@ -188,12 +188,12 @@ async function searchCompanyEmployees(
   // - companies: list of company names (it will find the LinkedIn page)
   // - jobTitles: filter by these job titles on the People tab
   // - maxItems: max employees to return
-  // - profileScraperMode: "Short" for basic data (cheapest)
+  // - profileScraperMode: must use the exact enum values the actor expects
   const input = {
     companies: [companyName],
     jobTitles: titleKeywords.split(' OR ').map(t => t.trim()),
     maxItems: maxResults,
-    profileScraperMode: 'Short',
+    profileScraperMode: 'Short ($4 per 1k)',
   };
 
   console.log(`[Apify] Employees search: "${companyName}" titles=[${input.jobTitles.join(', ')}]`);
