@@ -38,17 +38,78 @@ interface ApifyRunStatus {
 }
 
 /**
+ * Extract a company name from a currentPosition or positions array if present.
+ */
+function extractCompanyFromPositions(raw: Record<string, any>): string {
+  // currentPosition (array) — harvestapi format
+  if (Array.isArray(raw.currentPosition) && raw.currentPosition.length > 0) {
+    return raw.currentPosition[0].companyName || raw.currentPosition[0].company || '';
+  }
+  // positions (array) — other formats
+  if (Array.isArray(raw.positions) && raw.positions.length > 0) {
+    return raw.positions[0].companyName || raw.positions[0].company || '';
+  }
+  // experience (array) — another common format
+  if (Array.isArray(raw.experience) && raw.experience.length > 0) {
+    return raw.experience[0].companyName || raw.experience[0].company || '';
+  }
+  return '';
+}
+
+/**
+ * Extract title from currentPosition or positions array if top-level headline is empty.
+ */
+function extractTitleFromPositions(raw: Record<string, any>): string {
+  if (Array.isArray(raw.currentPosition) && raw.currentPosition.length > 0) {
+    return raw.currentPosition[0].title || raw.currentPosition[0].position || '';
+  }
+  if (Array.isArray(raw.positions) && raw.positions.length > 0) {
+    return raw.positions[0].title || raw.positions[0].position || '';
+  }
+  if (Array.isArray(raw.experience) && raw.experience.length > 0) {
+    return raw.experience[0].title || raw.experience[0].position || '';
+  }
+  return '';
+}
+
+/**
  * Normalize varying field names from different Apify actors into our standard shape.
+ * Covers: harvestapi, curious_coder, logical_scrapers, and generic formats.
  */
 function normalizeResult(raw: Record<string, any>): LinkedInPerson {
-  return {
-    fullName: raw.fullName || raw.name || raw.full_name ||
-      (raw.firstName && raw.lastName ? `${raw.firstName} ${raw.lastName}`.trim() : ''),
-    title: raw.title || raw.headline || raw.jobTitle || raw.job_title || '',
-    profileUrl: raw.profileUrl || raw.linkedinUrl || raw.linkedin_url || raw.url || raw.profileLink || '',
-    company: raw.company || raw.companyName || raw.company_name || raw.currentCompany || '',
-    location: raw.location || raw.geo || '',
-  };
+  // Name: try many field combinations
+  const fullName =
+    raw.fullName || raw.full_name || raw.name ||
+    (raw.firstName && raw.lastName
+      ? `${raw.firstName} ${raw.lastName}`.trim()
+      : raw.firstName || raw.lastName || '');
+
+  // Title / headline: top-level fields first, then dig into positions
+  const title =
+    raw.headline || raw.title || raw.jobTitle || raw.job_title ||
+    raw.currentJobTitle || raw.position || raw.summary ||
+    extractTitleFromPositions(raw) || '';
+
+  // LinkedIn URL: various field names
+  const profileUrl =
+    raw.linkedinUrl || raw.linkedin_url || raw.linkedInUrl ||
+    raw.profileUrl || raw.profile_url || raw.url || raw.profileLink ||
+    (raw.publicIdentifier
+      ? `https://www.linkedin.com/in/${raw.publicIdentifier}`
+      : '') || '';
+
+  // Company: top-level first, then dig into positions
+  const company =
+    raw.company || raw.companyName || raw.company_name ||
+    raw.currentCompany || raw.current_company ||
+    extractCompanyFromPositions(raw) || '';
+
+  // Location
+  const location =
+    raw.location || raw.geo || raw.addressLocality ||
+    (typeof raw.location === 'object' && raw.location?.default) || '';
+
+  return { fullName, title, profileUrl, company, location };
 }
 
 /**
@@ -155,10 +216,29 @@ export async function searchLinkedInPeople(
 
   console.log(`[Apify] Got ${rawItems.length} raw results`);
 
-  return rawItems
+  // ─── DEBUG: Log the first raw result so we can see exact field names ───
+  if (rawItems.length > 0) {
+    const sample = rawItems[0];
+    const keys = Object.keys(sample);
+    console.log(`[Apify] Raw result keys: ${keys.join(', ')}`);
+    console.log(`[Apify] Sample raw result: ${JSON.stringify(sample).slice(0, 500)}`);
+  }
+
+  const normalized = rawItems
     .map(normalizeResult)
-    .filter(p => p.fullName && p.fullName.trim().length > 0)
-    .slice(0, maxResults);
+    .filter(p => p.fullName && p.fullName.trim().length > 0);
+
+  // ─── DEBUG: Log first normalized result ───
+  if (normalized.length > 0) {
+    console.log(`[Apify] First normalized: ${JSON.stringify(normalized[0])}`);
+  } else {
+    console.log(`[Apify] WARNING: All ${rawItems.length} results lost after normalization!`);
+    if (rawItems.length > 0) {
+      console.log(`[Apify] First raw for debugging: ${JSON.stringify(rawItems[0]).slice(0, 800)}`);
+    }
+  }
+
+  return normalized.slice(0, maxResults);
 }
 
 /**
