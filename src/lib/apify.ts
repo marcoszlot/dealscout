@@ -1,15 +1,18 @@
 /**
- * Apify LinkedIn People Search Client
+ * Apify LinkedIn Company Employees Client
  *
- * Uses the Apify API to search LinkedIn for people at a given company.
- * Default actor: harvestapi/linkedin-profile-search (no cookies, no rental fee)
+ * Uses harvestapi/linkedin-company-employees to search the People tab
+ * of a company's LinkedIn page. This guarantees results are actual employees,
+ * not random people from all over LinkedIn.
  *
- * Pricing: ~$0.10 per search page (covered by Apify free tier $5/mo)
- * Override via APIFY_ACTOR_ID env var.
+ * No cookies or LinkedIn account required.
+ * Pricing: covered by Apify free tier ($5/mo credits)
+ * Free tier: up to 10 employees per company (perfect for our use case)
  */
 
 const APIFY_BASE_URL = 'https://api.apify.com/v2';
-const DEFAULT_ACTOR_ID = 'harvestapi~linkedin-profile-search';
+const EMPLOYEES_ACTOR_ID = 'harvestapi~linkedin-company-employees';
+const SEARCH_ACTOR_ID = 'harvestapi~linkedin-profile-search';
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLL_ATTEMPTS = 40; // 3s × 40 = 2 min max wait
 
@@ -38,59 +41,49 @@ interface ApifyRunStatus {
 }
 
 /**
- * Extract a company name from a currentPosition or positions array if present.
+ * Extract a company name from nested position arrays if present.
  */
 function extractCompanyFromPositions(raw: Record<string, any>): string {
-  // currentPosition (array) — harvestapi format
-  if (Array.isArray(raw.currentPosition) && raw.currentPosition.length > 0) {
-    return raw.currentPosition[0].companyName || raw.currentPosition[0].company || '';
-  }
-  // positions (array) — other formats
-  if (Array.isArray(raw.positions) && raw.positions.length > 0) {
-    return raw.positions[0].companyName || raw.positions[0].company || '';
-  }
-  // experience (array) — another common format
-  if (Array.isArray(raw.experience) && raw.experience.length > 0) {
-    return raw.experience[0].companyName || raw.experience[0].company || '';
+  for (const key of ['currentPosition', 'positions', 'experience']) {
+    if (Array.isArray(raw[key]) && raw[key].length > 0) {
+      return raw[key][0].companyName || raw[key][0].company || '';
+    }
   }
   return '';
 }
 
 /**
- * Extract title from currentPosition or positions array if top-level headline is empty.
+ * Extract title from nested position arrays if top-level headline is empty.
  */
 function extractTitleFromPositions(raw: Record<string, any>): string {
-  if (Array.isArray(raw.currentPosition) && raw.currentPosition.length > 0) {
-    return raw.currentPosition[0].title || raw.currentPosition[0].position || '';
-  }
-  if (Array.isArray(raw.positions) && raw.positions.length > 0) {
-    return raw.positions[0].title || raw.positions[0].position || '';
-  }
-  if (Array.isArray(raw.experience) && raw.experience.length > 0) {
-    return raw.experience[0].title || raw.experience[0].position || '';
+  for (const key of ['currentPosition', 'positions', 'experience']) {
+    if (Array.isArray(raw[key]) && raw[key].length > 0) {
+      return raw[key][0].title || raw[key][0].position || '';
+    }
   }
   return '';
 }
 
 /**
- * Normalize varying field names from different Apify actors into our standard shape.
- * Covers: harvestapi, curious_coder, logical_scrapers, and generic formats.
+ * Normalize varying field names from Apify actors into our standard shape.
  */
-function normalizeResult(raw: Record<string, any>): LinkedInPerson {
-  // Name: try many field combinations
+function normalizeResult(raw: Record<string, any>, fallbackCompany?: string): LinkedInPerson {
+  // Name
   const fullName =
     raw.fullName || raw.full_name || raw.name ||
     (raw.firstName && raw.lastName
       ? `${raw.firstName} ${raw.lastName}`.trim()
       : raw.firstName || raw.lastName || '');
 
-  // Title / headline: top-level fields first, then dig into positions
-  const title =
+  // Title / headline — NEVER use raw.summary (that's the bio "About" section)
+  const rawTitle =
     raw.headline || raw.title || raw.jobTitle || raw.job_title ||
-    raw.currentJobTitle || raw.position || raw.summary ||
+    raw.currentJobTitle || raw.position || raw.subTitle || raw.tagline ||
     extractTitleFromPositions(raw) || '';
+  // Safety: if longer than 200 chars, it's a bio not a headline
+  const title = rawTitle.length > 200 ? '' : rawTitle;
 
-  // LinkedIn URL: various field names
+  // LinkedIn URL
   const profileUrl =
     raw.linkedinUrl || raw.linkedin_url || raw.linkedInUrl ||
     raw.profileUrl || raw.profile_url || raw.url || raw.profileLink ||
@@ -98,28 +91,26 @@ function normalizeResult(raw: Record<string, any>): LinkedInPerson {
       ? `https://www.linkedin.com/in/${raw.publicIdentifier}`
       : '') || '';
 
-  // Company: top-level first, then dig into positions
+  // Company — for the employees actor, we know the company already
   const company =
     raw.company || raw.companyName || raw.company_name ||
     raw.currentCompany || raw.current_company ||
-    extractCompanyFromPositions(raw) || '';
+    extractCompanyFromPositions(raw) ||
+    fallbackCompany || '';
 
   // Location
   const location =
-    raw.location || raw.geo || raw.addressLocality ||
-    (typeof raw.location === 'object' && raw.location?.default) || '';
+    (typeof raw.location === 'string' ? raw.location : '') ||
+    raw.geo || raw.addressLocality || '';
 
   return { fullName, title, profileUrl, company, location };
 }
 
-/**
- * Start an Apify actor run and return the run ID + dataset ID.
- */
-async function startRun(input: Record<string, any>): Promise<{ runId: string; datasetId: string }> {
+// ─── Low-level Apify API helpers ─────────────────────────────────────
+
+async function startRun(actorId: string, input: Record<string, any>): Promise<{ runId: string; datasetId: string }> {
   const token = process.env.APIFY_API_TOKEN;
   if (!token) throw new Error('Missing APIFY_API_TOKEN environment variable');
-
-  const actorId = process.env.APIFY_ACTOR_ID || DEFAULT_ACTOR_ID;
 
   const res = await fetch(`${APIFY_BASE_URL}/acts/${actorId}/runs?token=${token}`, {
     method: 'POST',
@@ -139,9 +130,6 @@ async function startRun(input: Record<string, any>): Promise<{ runId: string; da
   };
 }
 
-/**
- * Poll until the run completes (or fails/times out).
- */
 async function waitForRun(runId: string): Promise<string> {
   const token = process.env.APIFY_API_TOKEN;
 
@@ -158,15 +146,11 @@ async function waitForRun(runId: string): Promise<string> {
     if (['FAILED', 'ABORTED', 'TIMED-OUT'].includes(status)) {
       throw new Error(`Apify run ${status}`);
     }
-    // Still RUNNING or READY — keep polling
   }
 
   throw new Error('Apify run timed out after polling');
 }
 
-/**
- * Fetch dataset items from a completed run.
- */
 async function getDatasetItems(datasetId: string): Promise<Record<string, any>[]> {
   const token = process.env.APIFY_API_TOKEN;
 
@@ -181,76 +165,118 @@ async function getDatasetItems(datasetId: string): Promise<Record<string, any>[]
   return res.json();
 }
 
+// ─── Company Employees Search (PRIMARY method) ──────────────────────
+
 /**
- * Search LinkedIn for people at a specific company with given role keywords.
+ * Search a company's LinkedIn People tab for employees with specific titles.
  *
- * Uses the harvestapi/linkedin-profile-search actor input format:
- * - searchQuery: general fuzzy search (combines role keywords + company name)
- * - maxItems: max number of profiles to return
- * - profileScraperMode: "Short" for basic data (cheapest — $0.10/page only)
+ * This goes directly to the company's employee list — guaranteeing all
+ * results are actual employees of that company.
  *
- * @param companyName - The company to search for
- * @param roleKeywords - Role/title keywords (e.g., "Vice President OR Principal")
- * @param maxResults - Max profiles to return (default 10)
- * @returns Array of normalized LinkedIn person results
+ * @param companyName - Company name (actor will find the LinkedIn page)
+ * @param titleKeywords - Job title filter keywords (e.g., "Corporate Development")
+ * @param maxResults - Max employees to return (free tier: 10)
  */
-export async function searchLinkedInPeople(
+async function searchCompanyEmployees(
   companyName: string,
-  roleKeywords: string,
+  titleKeywords: string,
   maxResults: number = 10,
 ): Promise<LinkedInPerson[]> {
-  // Put company name first for stronger relevance signal,
-  // then the role keywords
-  const searchQuery = `${companyName} ${roleKeywords}`;
+  const actorId = process.env.APIFY_ACTOR_ID || EMPLOYEES_ACTOR_ID;
 
-  // Input format for harvestapi/linkedin-profile-search
-  // We pass both searchQuery (general fuzzy) and companies filter
-  const input: Record<string, any> = {
-    searchQuery,
+  // Input for harvestapi/linkedin-company-employees:
+  // - companies: list of company names (it will find the LinkedIn page)
+  // - jobTitles: filter by these job titles on the People tab
+  // - maxItems: max employees to return
+  // - profileScraperMode: "Short" for basic data (cheapest)
+  const input = {
+    companies: [companyName],
+    jobTitles: titleKeywords.split(' OR ').map(t => t.trim()),
     maxItems: maxResults,
-    profileScraperMode: 'Short',  // cheapest mode — basic profile data only
+    profileScraperMode: 'Short',
   };
 
-  console.log(`[Apify] Searching: "${searchQuery}" (max ${maxResults})`);
+  console.log(`[Apify] Employees search: "${companyName}" titles=[${input.jobTitles.join(', ')}]`);
 
-  const { runId } = await startRun(input);
+  const { runId } = await startRun(actorId, input);
   const datasetId = await waitForRun(runId);
   const rawItems = await getDatasetItems(datasetId);
 
-  console.log(`[Apify] Got ${rawItems.length} raw results`);
+  console.log(`[Apify] Got ${rawItems.length} employee results`);
 
-  // ─── DEBUG: Log the first raw result so we can see exact field names ───
+  // DEBUG: Log raw field names so we can verify the mapping
   if (rawItems.length > 0) {
     const sample = rawItems[0];
     const keys = Object.keys(sample);
-    console.log(`[Apify] Raw result keys: ${keys.join(', ')}`);
-    console.log(`[Apify] Sample raw result: ${JSON.stringify(sample).slice(0, 500)}`);
+    console.log(`[Apify] Raw keys: ${keys.join(', ')}`);
+    for (const key of keys) {
+      const val = sample[key];
+      const type = Array.isArray(val) ? 'array' : typeof val;
+      const preview = typeof val === 'string' ? val.slice(0, 100) : JSON.stringify(val)?.slice(0, 100);
+      console.log(`[Apify]   ${key} (${type}): ${preview}`);
+    }
   }
 
   const normalized = rawItems
-    .map(normalizeResult)
+    .map(raw => normalizeResult(raw, companyName))
     .filter(p => p.fullName && p.fullName.trim().length > 0);
 
-  // ─── DEBUG: Log first normalized result ───
   if (normalized.length > 0) {
     console.log(`[Apify] First normalized: ${JSON.stringify(normalized[0])}`);
-  } else {
-    console.log(`[Apify] WARNING: All ${rawItems.length} results lost after normalization!`);
-    if (rawItems.length > 0) {
-      console.log(`[Apify] First raw for debugging: ${JSON.stringify(rawItems[0]).slice(0, 800)}`);
-    }
+  } else if (rawItems.length > 0) {
+    console.log(`[Apify] WARNING: ${rawItems.length} results lost after normalization!`);
+    console.log(`[Apify] First raw: ${JSON.stringify(rawItems[0]).slice(0, 800)}`);
   }
 
   return normalized.slice(0, maxResults);
 }
 
+// ─── Fallback: General Profile Search ───────────────────────────────
+
 /**
- * Run multiple search rounds for a company, progressively broadening keywords.
- * Stops as soon as any round returns results.
+ * Fallback: general LinkedIn search if company employees actor returns nothing.
+ * Less precise but broader reach.
+ */
+async function searchProfilesFallback(
+  companyName: string,
+  roleKeywords: string,
+  maxResults: number = 10,
+): Promise<LinkedInPerson[]> {
+  const searchQuery = `${companyName} ${roleKeywords}`;
+
+  const input = {
+    searchQuery,
+    maxItems: maxResults,
+    profileScraperMode: 'Short',
+  };
+
+  console.log(`[Apify] Fallback profile search: "${searchQuery}"`);
+
+  const { runId } = await startRun(SEARCH_ACTOR_ID, input);
+  const datasetId = await waitForRun(runId);
+  const rawItems = await getDatasetItems(datasetId);
+
+  console.log(`[Apify] Fallback got ${rawItems.length} results`);
+
+  return rawItems
+    .map(raw => normalizeResult(raw, companyName))
+    .filter(p => p.fullName && p.fullName.trim().length > 0)
+    .slice(0, maxResults);
+}
+
+// ─── Main Export: searchWithFallback ────────────────────────────────
+
+/**
+ * Search for contacts at a company using a two-phase approach:
+ *
+ * Phase 1: Company Employees actor (People tab) — precise, guaranteed correct company
+ * Phase 2: General profile search — broader, used only if Phase 1 returns nothing
+ *
+ * Within each phase, we try progressively broader keyword rounds.
  *
  * @param companyName - Target company
  * @param buyerType - 'PE' or 'Strategic'
- * @returns All LinkedIn results from the first successful round
+ * @returns LinkedIn results from the first successful round
  */
 export async function searchWithFallback(
   companyName: string,
@@ -268,18 +294,48 @@ export async function searchWithFallback(
         'CFO OR CEO',
       ];
 
+  // ─── Phase 1: Company Employees (People tab) ───
+  console.log(`[Apify] Phase 1: Searching ${companyName} employees...`);
+
   for (const keywords of searchRounds) {
     try {
-      const results = await searchLinkedInPeople(companyName, keywords, 10);
-      if (results.length > 0) return results;
-    } catch (err) {
-      console.error(`Apify search round failed for "${companyName}" with "${keywords}":`, err);
-      // Continue to next round
+      const results = await searchCompanyEmployees(companyName, keywords, 10);
+      if (results.length > 0) {
+        console.log(`[Apify] Phase 1 success: ${results.length} employees found`);
+        return results;
+      }
+    } catch (err: any) {
+      console.error(`[Apify] Employees search failed for "${companyName}" with "${keywords}":`, err?.message);
     }
 
-    // Respect rate limits between rounds
     await new Promise(r => setTimeout(r, 1000));
   }
 
-  return []; // All rounds returned empty
+  // ─── Phase 2: Fallback to general profile search ───
+  console.log(`[Apify] Phase 2: Falling back to profile search for ${companyName}...`);
+
+  for (const keywords of searchRounds) {
+    try {
+      const results = await searchProfilesFallback(companyName, keywords, 10);
+      if (results.length > 0) {
+        console.log(`[Apify] Phase 2 success: ${results.length} profiles found`);
+        return results;
+      }
+    } catch (err: any) {
+      console.error(`[Apify] Fallback search failed for "${companyName}" with "${keywords}":`, err?.message);
+    }
+
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  return []; // Nothing found anywhere
+}
+
+// Keep this export for the research-worker's single-company retry
+export async function searchLinkedInPeople(
+  companyName: string,
+  roleKeywords: string,
+  maxResults: number = 10,
+): Promise<LinkedInPerson[]> {
+  return searchCompanyEmployees(companyName, roleKeywords, maxResults);
 }

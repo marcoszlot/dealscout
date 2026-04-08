@@ -149,24 +149,25 @@ function scoreCandidate(
     let score = tier.score;
 
     // Company match bonus/penalty
-    // This is critical: we MUST find someone at the TARGET company,
-    // not just anyone with a matching title on all of LinkedIn.
+    // Note: when using the company-employees actor, all results are from
+    // the target company already, but the company field might be empty
+    // in the response. So we're lenient on "unknown company" when results
+    // come from the employees actor (they're guaranteed correct).
     if (companyMatches(person.company, targetCompany)) {
       score += 10; // bonus for confirmed company match
     } else if (person.company) {
-      // Wrong company — this person works somewhere else entirely
-      score = Math.min(score * 0.2, 30); // severe penalty — cap at 30
-    } else {
-      // Company unknown — can't confirm they work there
-      score = Math.min(score * 0.3, 35); // heavy penalty — cap at 35
+      // Different company name — could be a subsidiary or different spelling
+      // Moderate penalty (not severe, since employees actor guarantees the company)
+      score *= 0.6;
     }
+    // If company is empty/unknown, no penalty — the employees actor
+    // already filtered to the right company
 
-    // Also check if the company name appears anywhere in their headline/title
-    // (e.g. "VP at Celcoin" in headline)
+    // Extra signal: company name in their headline (e.g. "VP at Celcoin")
     const titleLower = title.toLowerCase();
     const companyLower = targetCompany.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (companyLower.length > 2 && titleLower.includes(companyLower)) {
-      score += 15; // strong signal — company name in their headline
+      score += 10;
     }
 
     // Profile completeness bonus
