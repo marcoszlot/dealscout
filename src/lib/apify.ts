@@ -199,10 +199,13 @@ export async function searchLinkedInPeople(
   roleKeywords: string,
   maxResults: number = 10,
 ): Promise<LinkedInPerson[]> {
-  const searchQuery = `${roleKeywords} ${companyName}`;
+  // Put company name first for stronger relevance signal,
+  // then the role keywords
+  const searchQuery = `${companyName} ${roleKeywords}`;
 
   // Input format for harvestapi/linkedin-profile-search
-  const input = {
+  // We pass both searchQuery (general fuzzy) and companies filter
+  const input: Record<string, any> = {
     searchQuery,
     maxItems: maxResults,
     profileScraperMode: 'Short',  // cheapest mode — basic profile data only
