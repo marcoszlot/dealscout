@@ -1,25 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase';
+import { processBatch } from '@/lib/research-worker';
 
-export const maxDuration = 300; // 5 min for Vercel
+export const maxDuration = 60; // Vercel Hobby max
 
-const BATCH_SIZE = 10; // each subagent handles up to 10 companies
+const BATCH_SIZE = 10;
 
 /**
  * Research Orchestrator
  *
- * Splits pending companies into batches of 10 and deploys
- * ceil(total/10) parallel "subagent" workers.
+ * Gets all pending companies, splits into batches of 10,
+ * and processes them directly (no HTTP calls between functions).
  *
- * Architecture:
- *   start (this route)
- *     ├── batch worker #1  (companies 1-10)
- *     ├── batch worker #2  (companies 11-20)
- *     ├── batch worker #3  (companies 21-30)
- *     └── ...
- *
- * Each batch worker calls Apify + algorithmic scorer.
- * Zero AI tokens consumed.
+ * On Vercel Hobby (60s max), this handles up to ~10 companies per run.
+ * For larger lists, the frontend can re-trigger for remaining pending companies.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -61,39 +55,39 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const totalSubagents = batches.length; // = Math.ceil(companies.length / BATCH_SIZE)
+    const totalSubagents = batches.length;
     console.log(
-      `[DealScout] Deploying ${totalSubagents} subagent(s) for ${companies.length} companies ` +
-      `(${BATCH_SIZE} per batch)`
+      `[DealScout] Processing ${companies.length} companies in ${totalSubagents} batch(es) (${BATCH_SIZE} per batch)`
     );
 
-    // Deploy all subagents in parallel (fire and forget)
-    const batchUrl = new URL('/api/research/batch', request.url).toString();
+    // Process batches sequentially (direct function call, no HTTP)
+    const allResults = [];
+    for (let i = 0; i < batches.length; i++) {
+      // Check if paused between batches
+      const { data: project } = await supabase
+        .from('projects')
+        .select('status')
+        .eq('id', project_id)
+        .single();
 
-    const subagentPromises = batches.map((companyIds, index) =>
-      fetch(batchUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company_ids: companyIds,
-          project_id,
-        }),
-      })
-        .then(async (res) => {
-          const data = await res.json().catch(() => ({}));
-          console.log(`[DealScout] Subagent #${index + 1} finished:`, data);
-          return { index: index + 1, ok: res.ok, data };
-        })
-        .catch((err) => {
-          console.error(`[DealScout] Subagent #${index + 1} failed:`, err);
-          return { index: index + 1, ok: false, error: err.message };
-        })
-    );
+      if (project?.status === 'paused') {
+        console.log(`[DealScout] Paused after batch ${i}`);
+        break;
+      }
 
-    // Wait for all subagents to complete
-    const results = await Promise.allSettled(subagentPromises);
+      console.log(`[DealScout] Starting batch ${i + 1}/${totalSubagents} (${batches[i].length} companies)`);
 
-    // Check final state and mark project complete
+      try {
+        const result = await processBatch(batches[i], project_id);
+        console.log(`[DealScout] Batch ${i + 1} done:`, result);
+        allResults.push({ batch: i + 1, ...result });
+      } catch (err: any) {
+        console.error(`[DealScout] Batch ${i + 1} failed:`, err?.message || err);
+        allResults.push({ batch: i + 1, error: err?.message });
+      }
+    }
+
+    // Mark project complete if still running
     const { data: finalProject } = await supabase
       .from('projects')
       .select('status')
@@ -101,18 +95,26 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (finalProject?.status === 'running') {
-      await supabase
-        .from('projects')
-        .update({ status: 'completed' })
-        .eq('id', project_id);
+      // Check if there are still pending companies (function might have timed out)
+      const { count: pendingCount } = await supabase
+        .from('companies')
+        .select('*', { count: 'exact', head: true })
+        .eq('project_id', project_id)
+        .eq('status', 'pending');
+
+      if (pendingCount === 0) {
+        await supabase
+          .from('projects')
+          .update({ status: 'completed' })
+          .eq('id', project_id);
+      }
     }
 
     return NextResponse.json({
       ok: true,
       total_companies: companies.length,
-      subagents_deployed: totalSubagents,
-      batch_size: BATCH_SIZE,
-      results: results.map(r => r.status === 'fulfilled' ? r.value : { error: 'rejected' }),
+      batches_processed: allResults.length,
+      results: allResults,
     });
   } catch (error: any) {
     console.error('Error starting research:', error);
