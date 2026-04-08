@@ -2,14 +2,14 @@
  * Apify LinkedIn People Search Client
  *
  * Uses the Apify API to search LinkedIn for people at a given company.
- * Compatible with most LinkedIn People Search actors on the Apify marketplace.
+ * Default actor: harvestapi/linkedin-profile-search (no cookies, no rental fee)
  *
- * Default actor: curious_coder/linkedin-people-search-scraper
+ * Pricing: ~$0.10 per search page (covered by Apify free tier $5/mo)
  * Override via APIFY_ACTOR_ID env var.
  */
 
 const APIFY_BASE_URL = 'https://api.apify.com/v2';
-const DEFAULT_ACTOR_ID = 'curious_coder~linkedin-people-search-scraper';
+const DEFAULT_ACTOR_ID = 'harvestapi~linkedin-profile-search';
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLL_ATTEMPTS = 40; // 3s × 40 = 2 min max wait
 
@@ -123,6 +123,11 @@ async function getDatasetItems(datasetId: string): Promise<Record<string, any>[]
 /**
  * Search LinkedIn for people at a specific company with given role keywords.
  *
+ * Uses the harvestapi/linkedin-profile-search actor input format:
+ * - searchQuery: general fuzzy search (combines role keywords + company name)
+ * - maxItems: max number of profiles to return
+ * - profileScraperMode: "Short" for basic data (cheapest — $0.10/page only)
+ *
  * @param companyName - The company to search for
  * @param roleKeywords - Role/title keywords (e.g., "Vice President OR Principal")
  * @param maxResults - Max profiles to return (default 10)
@@ -133,22 +138,22 @@ export async function searchLinkedInPeople(
   roleKeywords: string,
   maxResults: number = 10,
 ): Promise<LinkedInPerson[]> {
-  // Build the LinkedIn search URL
-  // Most actors accept either a searchUrl or keyword-based input
   const searchQuery = `${roleKeywords} ${companyName}`;
 
+  // Input format for harvestapi/linkedin-profile-search
   const input = {
-    // Common input formats across different actors:
-    searchUrl: `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(searchQuery)}`,
-    queries: [searchQuery],
-    keyword: searchQuery,
-    maxResults,
-    resultsLimit: maxResults,
+    searchQuery,
+    maxItems: maxResults,
+    profileScraperMode: 'Short',  // cheapest mode — basic profile data only
   };
+
+  console.log(`[Apify] Searching: "${searchQuery}" (max ${maxResults})`);
 
   const { runId } = await startRun(input);
   const datasetId = await waitForRun(runId);
   const rawItems = await getDatasetItems(datasetId);
+
+  console.log(`[Apify] Got ${rawItems.length} raw results`);
 
   return rawItems
     .map(normalizeResult)
@@ -158,7 +163,7 @@ export async function searchLinkedInPeople(
 
 /**
  * Run multiple search rounds for a company, progressively broadening keywords.
- * Stops as soon as any round returns results that score above the threshold.
+ * Stops as soon as any round returns results.
  *
  * @param companyName - Target company
  * @param buyerType - 'PE' or 'Strategic'
@@ -170,14 +175,14 @@ export async function searchWithFallback(
 ): Promise<LinkedInPerson[]> {
   const searchRounds = buyerType === 'PE'
     ? [
-        '"Vice President" OR "Principal" OR "Senior Associate"',
-        '"Managing Director" OR "Partner"',
-        '"Business Development"',
+        'Vice President OR Principal OR Senior Associate',
+        'Managing Director OR Partner',
+        'Business Development',
       ]
     : [
-        '"M&A" OR "Corporate Development" OR "Corp Dev"',
-        '"Strategy" OR "Business Development"',
-        '"CFO" OR "CEO"',
+        'M&A OR Corporate Development OR Corp Dev',
+        'Strategy OR Business Development',
+        'CFO OR CEO',
       ];
 
   for (const keywords of searchRounds) {
