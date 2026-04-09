@@ -44,7 +44,8 @@ interface ApifyRunStatus {
  * Extract a company name from nested position arrays if present.
  */
 function extractCompanyFromPositions(raw: Record<string, any>): string {
-  for (const key of ['currentPosition', 'positions', 'experience']) {
+  // Note: harvestapi employees actor uses "currentPositions" (plural with 's')
+  for (const key of ['currentPositions', 'currentPosition', 'positions', 'experience']) {
     if (Array.isArray(raw[key]) && raw[key].length > 0) {
       return raw[key][0].companyName || raw[key][0].company || '';
     }
@@ -56,9 +57,10 @@ function extractCompanyFromPositions(raw: Record<string, any>): string {
  * Extract title from nested position arrays if top-level headline is empty.
  */
 function extractTitleFromPositions(raw: Record<string, any>): string {
-  for (const key of ['currentPosition', 'positions', 'experience']) {
+  // Note: harvestapi employees actor uses "currentPositions" (plural with 's')
+  for (const key of ['currentPositions', 'currentPosition', 'positions', 'experience']) {
     if (Array.isArray(raw[key]) && raw[key].length > 0) {
-      return raw[key][0].title || raw[key][0].position || '';
+      return raw[key][0].title || raw[key][0].position || raw[key][0].description || '';
     }
   }
   return '';
@@ -98,9 +100,11 @@ function normalizeResult(raw: Record<string, any>, fallbackCompany?: string): Li
     extractCompanyFromPositions(raw) ||
     fallbackCompany || '';
 
-  // Location
+  // Location — harvestapi returns { linkedinText: "São Paulo, Brazil" }
   const location =
     (typeof raw.location === 'string' ? raw.location : '') ||
+    (typeof raw.location === 'object' && raw.location?.linkedinText) ||
+    (typeof raw.location === 'object' && raw.location?.default) ||
     raw.geo || raw.addressLocality || '';
 
   return { fullName, title, profileUrl, company, location };
