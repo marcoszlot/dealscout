@@ -517,7 +517,13 @@ export default function ProjectDashboard() {
                       ) : '—'}
                     </td>
                     <td className="px-4 py-3 text-gray-400 max-w-[200px] truncate" title={company.notes || ''}>
-                      {company.notes || '—'}
+                      {(() => {
+                        try {
+                          const parsed = JSON.parse(company.notes || '');
+                          if (parsed?.summary) return parsed.summary;
+                        } catch {}
+                        return company.notes || '—';
+                      })()}
                     </td>
                   </tr>
                 ))}
@@ -663,7 +669,15 @@ export default function ProjectDashboard() {
 
               {/* Contact Section */}
               <div className="space-y-3">
-                <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider">Contact Found</h3>
+                <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider">
+                  {(() => {
+                    try {
+                      const parsed = JSON.parse(selectedCompany.notes || '');
+                      if (parsed?.all_contacts?.length > 1) return `Contacts Found (${parsed.all_contacts.length})`;
+                    } catch {}
+                    return 'Contact Found';
+                  })()}
+                </h3>
                 {editing ? (
                   <div className="space-y-3">
                     <input
@@ -717,35 +731,100 @@ export default function ProjectDashboard() {
                   </div>
                 ) : (
                   <div className="space-y-2 text-sm">
-                    {selectedCompany.contact_name ? (
-                      <>
-                        <p className="text-lg font-semibold text-white">{selectedCompany.contact_name}</p>
-                        <p className="text-gray-300">{selectedCompany.contact_title || 'No title'}</p>
-                        {selectedCompany.contact_linkedin && (
-                          <a
-                            href={selectedCompany.contact_linkedin.startsWith('http') ? selectedCompany.contact_linkedin : `https://${selectedCompany.contact_linkedin}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-400 hover:text-blue-300 flex items-center gap-1"
-                          >
-                            <Linkedin className="w-4 h-4" />
-                            View LinkedIn Profile
-                          </a>
-                        )}
-                        {selectedCompany.hierarchy_level && (
-                          <p className="text-gray-500">
-                            Level: <span className="text-gray-300">{selectedCompany.hierarchy_level}</span>
-                          </p>
-                        )}
-                      </>
-                    ) : (
-                      <p className="text-gray-500">No contact found yet</p>
-                    )}
-                    {selectedCompany.notes && (
-                      <div className="mt-2 p-3 bg-[#0a0a0a] rounded-lg">
-                        <p className="text-gray-400">{selectedCompany.notes}</p>
-                      </div>
-                    )}
+                    {(() => {
+                      // Try to parse all_contacts from JSON notes
+                      let allContacts: any[] = [];
+                      try {
+                        const parsed = JSON.parse(selectedCompany.notes || '');
+                        if (parsed?.all_contacts) allContacts = parsed.all_contacts;
+                      } catch {}
+
+                      if (allContacts.length > 0) {
+                        // Show ALL contacts
+                        return (
+                          <div className="space-y-3">
+                            {allContacts.map((contact: any, idx: number) => (
+                              <div
+                                key={idx}
+                                className={`p-3 rounded-lg border ${
+                                  idx === 0
+                                    ? 'bg-green-500/5 border-green-500/20'
+                                    : 'bg-[#0a0a0a] border-[#262626]'
+                                }`}
+                              >
+                                <div className="flex items-start justify-between">
+                                  <div className="flex-1">
+                                    <p className="text-white font-semibold">
+                                      {contact.name}
+                                      {idx === 0 && (
+                                        <span className="ml-2 text-xs bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">
+                                          Best Match
+                                        </span>
+                                      )}
+                                    </p>
+                                    <p className="text-gray-300 text-sm mt-0.5">{contact.title || 'No title'}</p>
+                                    {contact.company && (
+                                      <p className="text-gray-500 text-xs mt-0.5">{contact.company}</p>
+                                    )}
+                                    <div className="flex items-center gap-3 mt-1.5">
+                                      <span className="text-xs text-gray-500">
+                                        Score: <span className="text-gray-300">{contact.score}</span>
+                                      </span>
+                                      <span className="text-xs text-gray-500">
+                                        Level: <span className="text-gray-300">{contact.level}</span>
+                                      </span>
+                                    </div>
+                                  </div>
+                                  {contact.linkedin && (
+                                    <a
+                                      href={contact.linkedin.startsWith('http') ? contact.linkedin : `https://${contact.linkedin}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-blue-400 hover:text-blue-300 ml-2 shrink-0"
+                                    >
+                                      <Linkedin className="w-5 h-5" />
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      }
+
+                      // Fallback: single contact (old format or no JSON notes)
+                      if (selectedCompany.contact_name) {
+                        return (
+                          <>
+                            <p className="text-lg font-semibold text-white">{selectedCompany.contact_name}</p>
+                            <p className="text-gray-300">{selectedCompany.contact_title || 'No title'}</p>
+                            {selectedCompany.contact_linkedin && (
+                              <a
+                                href={selectedCompany.contact_linkedin.startsWith('http') ? selectedCompany.contact_linkedin : `https://${selectedCompany.contact_linkedin}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-400 hover:text-blue-300 flex items-center gap-1"
+                              >
+                                <Linkedin className="w-4 h-4" />
+                                View LinkedIn Profile
+                              </a>
+                            )}
+                            {selectedCompany.hierarchy_level && (
+                              <p className="text-gray-500">
+                                Level: <span className="text-gray-300">{selectedCompany.hierarchy_level}</span>
+                              </p>
+                            )}
+                            {selectedCompany.notes && (
+                              <div className="mt-2 p-3 bg-[#0a0a0a] rounded-lg">
+                                <p className="text-gray-400">{selectedCompany.notes}</p>
+                              </div>
+                            )}
+                          </>
+                        );
+                      }
+
+                      return <p className="text-gray-500">No contact found yet</p>;
+                    })()}
                   </div>
                 )}
               </div>

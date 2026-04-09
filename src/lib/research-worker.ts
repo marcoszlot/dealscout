@@ -7,7 +7,7 @@
 
 import { createServiceClient } from '@/lib/supabase';
 import { searchWithFallback } from '@/lib/apify';
-import { selectBestContact } from '@/lib/contact-scorer';
+import { scoreAllContacts } from '@/lib/contact-scorer';
 
 const DELAY_BETWEEN_COMPANIES_MS = 1000;
 
@@ -66,31 +66,70 @@ export async function processBatch(
         company.buyer_type as 'PE' | 'Strategic',
       );
 
-      // Score results algorithmically — zero AI tokens
-      const contact = selectBestContact(
+      // Score ALL results algorithmically — zero AI tokens
+      const { scored, escalation, debugInfo } = scoreAllContacts(
         linkedInResults,
         company.company_name,
         company.buyer_type as 'PE' | 'Strategic',
       );
 
-      // Save result
-      await supabase
-        .from('companies')
-        .update({
-          contact_name: contact.name || null,
-          contact_title: contact.title || null,
-          contact_linkedin: contact.linkedin || null,
-          hierarchy_level: contact.level || null,
-          notes: contact.notes || null,
-          status: contact.status,
-          search_attempts: (company.search_attempts || 0) + 1,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', companyId);
+      if (escalation) {
+        // No good contacts found
+        await supabase
+          .from('companies')
+          .update({
+            contact_name: null,
+            contact_title: null,
+            contact_linkedin: null,
+            hierarchy_level: null,
+            notes: `Algorithmic search: ${debugInfo}, none above threshold (40).`,
+            status: 'escalation',
+            search_attempts: (company.search_attempts || 0) + 1,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', companyId);
 
-      results.processed++;
-      if (contact.status === 'found') results.found++;
-      if (contact.status === 'escalation') results.escalation++;
+        results.processed++;
+        results.escalation++;
+      } else {
+        // We have contacts! Save best one in main fields, ALL in notes as JSON
+        const best = scored[0];
+
+        // Build all_contacts array for the notes field
+        const allContacts = scored.map((s, idx) => ({
+          name: s.person.fullName,
+          title: s.person.title,
+          linkedin: s.person.profileUrl,
+          company: s.person.company || '',
+          level: s.level,
+          score: Math.round(s.score),
+          matchedKeyword: s.matchedKeyword,
+          rank: idx + 1,
+        }));
+
+        // Notes: JSON with all contacts so the frontend can parse them
+        const notesPayload = JSON.stringify({
+          all_contacts: allContacts,
+          summary: `${scored.length} contacts found, best: "${best.matchedKeyword}" (score ${Math.round(best.score)})`,
+        });
+
+        await supabase
+          .from('companies')
+          .update({
+            contact_name: best.person.fullName,
+            contact_title: best.person.title,
+            contact_linkedin: best.person.profileUrl,
+            hierarchy_level: best.level,
+            notes: notesPayload,
+            status: 'found',
+            search_attempts: (company.search_attempts || 0) + 1,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', companyId);
+
+        results.processed++;
+        results.found++;
+      }
     } catch (err: any) {
       console.error(`Worker error for ${company.company_name}:`, err?.message || err);
 

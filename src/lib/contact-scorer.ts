@@ -57,7 +57,14 @@ const PE_HIERARCHY: HierarchyLevel[] = [
 
 const STRATEGIC_HIERARCHY: HierarchyLevel[] = [
   {
-    keywords: ['head of m&a', 'vp m&a', 'vice president m&a', 'm&a director', 'director of m&a', 'head of mergers'],
+    keywords: [
+      'head of m&a', 'vp m&a', 'vice president m&a',
+      'm&a director', 'director of m&a', 'director m&a',
+      'head of mergers', 'mergers and acquisitions',
+      'm&a manager', 'm&a specialist', 'm&a analyst',
+      'm&a associate', 'm&a lead', 'm&a counsel',
+      'strategy and m&a', 'strategy & m&a',
+    ],
     score: 100,
     level: 'M&A',
   },
@@ -67,7 +74,7 @@ const STRATEGIC_HIERARCHY: HierarchyLevel[] = [
     level: 'CorpDev',
   },
   {
-    keywords: ['svp strategy', 'chief strategy officer', 'cso', 'head of strategy', 'vp strategy'],
+    keywords: ['svp strategy', 'chief strategy officer', 'cso', 'head of strategy', 'vp strategy', 'strategy director', 'director of strategy', 'strategy manager'],
     score: 80,
     level: 'CorpDev',
   },
@@ -86,6 +93,12 @@ const STRATEGIC_HIERARCHY: HierarchyLevel[] = [
     negativeKeywords: ['vice president', 'vp'],
     score: 40,
     level: 'CEO',
+  },
+  // Catch-all: anyone with 'm&a' in their title who didn't match above
+  {
+    keywords: ['m&a'],
+    score: 90,
+    level: 'M&A',
   },
 ];
 
@@ -185,7 +198,7 @@ function scoreCandidate(
   return null;
 }
 
-// ─── Main Export ─────────────────────────────────────────────────────
+// ─── Main Exports ────────────────────────────────────────────────────
 
 export interface ScoredCandidate {
   person: LinkedInPerson;
@@ -195,18 +208,18 @@ export interface ScoredCandidate {
 }
 
 /**
- * Score all LinkedIn results and return the best contact.
+ * Score all LinkedIn results and return ALL contacts sorted by score.
  *
  * @param results - LinkedIn People Search results from Apify
- * @param targetCompany - The company we're looking for a contact at
+ * @param targetCompany - The company we're looking for contacts at
  * @param buyerType - 'PE' or 'Strategic' — determines which hierarchy to use
- * @returns The best ContactResult, or an escalation if nothing scores above threshold
+ * @returns All scored contacts sorted by score descending, plus escalation info
  */
-export function selectBestContact(
+export function scoreAllContacts(
   results: LinkedInPerson[],
   targetCompany: string,
   buyerType: 'PE' | 'Strategic',
-): ContactResult {
+): { scored: ScoredCandidate[]; escalation: boolean; debugInfo: string } {
   const hierarchy = buyerType === 'PE' ? PE_HIERARCHY : STRATEGIC_HIERARCHY;
   const ESCALATION_THRESHOLD = 40;
 
@@ -223,14 +236,31 @@ export function selectBestContact(
   // Sort by score descending
   scored.sort((a, b) => b.score - a.score);
 
-  // No results or all below threshold → escalation
-  if (scored.length === 0 || scored[0].score < ESCALATION_THRESHOLD) {
+  const escalation = scored.length === 0 || scored[0].score < ESCALATION_THRESHOLD;
+  const debugInfo = `${results.length} LinkedIn results, ${scored.length} scored. Top titles: ${results.slice(0, 3).map(r => r.title).join('; ')}`;
+
+  return { scored, escalation, debugInfo };
+}
+
+/**
+ * Score all LinkedIn results and return the best contact.
+ * (Kept for backward compatibility)
+ */
+export function selectBestContact(
+  results: LinkedInPerson[],
+  targetCompany: string,
+  buyerType: 'PE' | 'Strategic',
+): ContactResult {
+  const { scored, escalation, debugInfo } = scoreAllContacts(results, targetCompany, buyerType);
+  const ESCALATION_THRESHOLD = 40;
+
+  if (escalation) {
     return {
       name: '',
       title: '',
       linkedin: '',
       level: '',
-      notes: `Algorithmic search: ${results.length} LinkedIn results found, ${scored.length} scored, none above threshold (${ESCALATION_THRESHOLD}). Top titles: ${results.slice(0, 3).map(r => r.title).join('; ')}`,
+      notes: `Algorithmic search: ${debugInfo}, none above threshold (${ESCALATION_THRESHOLD}).`,
       status: 'escalation',
     };
   }
